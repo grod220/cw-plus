@@ -2,7 +2,7 @@ use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::Uint128;
 
 use cw20::{Cw20ReceiveMsg, Denom};
-pub use cw_controllers::ClaimsResponse;
+pub use cw_controllers::{AdminExecuteUpdate, ClaimsResponse};
 use cw_utils::Duration;
 
 #[cw_serde]
@@ -30,7 +30,7 @@ pub enum ExecuteMsg {
     Claim {},
 
     /// Change the admin
-    UpdateAdmin { admin: Option<String> },
+    UpdateAdmin { update: AdminExecuteUpdate },
     /// Add a new hook to be informed of all membership changes. Must be called by Admin
     AddHook { addr: String },
     /// Remove a hook. Must be called by Admin

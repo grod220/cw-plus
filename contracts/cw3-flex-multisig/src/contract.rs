@@ -490,6 +490,7 @@ mod tests {
     use cw3::{DepositError, UncheckedDepositInfo};
     use cw4::{Cw4ExecuteMsg, Member};
     use cw4_group::helpers::Cw4GroupContract;
+    use cw_controllers::AdminExecuteUpdate;
     use cw_multi_test::{
         next_block, App, AppBuilder, BankSudo, Contract, ContractWrapper, Executor, SudoMsg,
     };
@@ -639,13 +640,26 @@ mod tests {
 
         // 3. (Optional) Set the multisig as the group owner
         if multisig_as_group_admin {
-            let update_admin = Cw4ExecuteMsg::UpdateAdmin {
-                admin: Some(flex_addr.to_string()),
+            let propose_admin = Cw4ExecuteMsg::UpdateAdmin {
+                update: AdminExecuteUpdate::ProposeNewAdmin {
+                    proposed: flex_addr.to_string(),
+                },
             };
             app.execute_contract(
                 Addr::unchecked(OWNER),
                 group_addr.clone(),
-                &update_admin,
+                &propose_admin,
+                &[],
+            )
+            .unwrap();
+
+            let accept_admin_role = Cw4ExecuteMsg::UpdateAdmin {
+                update: AdminExecuteUpdate::AcceptProposed,
+            };
+            app.execute_contract(
+                Addr::unchecked(flex_addr.to_string()),
+                group_addr.clone(),
+                &accept_admin_role,
                 &[],
             )
             .unwrap();

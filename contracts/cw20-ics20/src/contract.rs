@@ -22,6 +22,7 @@ use crate::state::{
     increase_channel_balance, AllowInfo, Config, ADMIN, ALLOW_LIST, CHANNEL_INFO, CHANNEL_STATE,
     CONFIG,
 };
+use cw_controllers::AdminUpdate::InitializeAdmin;
 use cw_utils::{maybe_addr, nonpayable, one_coin};
 
 // version info for migration info
@@ -30,7 +31,7 @@ const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
-    mut deps: DepsMut,
+    deps: DepsMut,
     _env: Env,
     _info: MessageInfo,
     msg: InitMsg,
@@ -43,7 +44,7 @@ pub fn instantiate(
     CONFIG.save(deps.storage, &cfg)?;
 
     let admin = deps.api.addr_validate(&msg.gov_contract)?;
-    ADMIN.set(deps.branch(), Some(admin))?;
+    ADMIN.update(deps.storage, InitializeAdmin { admin })?;
 
     // add all allows
     for allowed in msg.allowlist {
@@ -70,10 +71,7 @@ pub fn execute(
             execute_transfer(deps, env, msg, Amount::Native(coin), info.sender)
         }
         ExecuteMsg::Allow(allow) => execute_allow(deps, env, info, allow),
-        ExecuteMsg::UpdateAdmin { admin } => {
-            let admin = deps.api.addr_validate(&admin)?;
-            Ok(ADMIN.execute_update_admin(deps, info, Some(admin))?)
-        }
+        ExecuteMsg::UpdateAdmin { update } => Ok(ADMIN.execute_update(deps, info, update)?),
     }
 }
 
@@ -169,7 +167,7 @@ pub fn execute_allow(
     info: MessageInfo,
     allow: AllowMsg,
 ) -> Result<Response, ContractError> {
-    ADMIN.assert_admin(deps.as_ref(), &info.sender)?;
+    ADMIN.assert_admin(deps.storage, &info.sender)?;
 
     let contract = deps.api.addr_validate(&allow.contract)?;
     let set = AllowInfo {
@@ -236,7 +234,12 @@ pub fn migrate(mut deps: DepsMut, env: Env, msg: MigrateMsg) -> Result<Response,
     // run the v1->v2 converstion if we are v1 style
     if storage_version <= MIGRATE_VERSION_2.parse().map_err(from_semver)? {
         let old_config = v1::CONFIG.load(deps.storage)?;
-        ADMIN.set(deps.branch(), Some(old_config.gov_contract))?;
+        ADMIN.update(
+            deps.storage,
+            InitializeAdmin {
+                admin: old_config.gov_contract,
+            },
+        )?;
         let config = Config {
             default_timeout: old_config.default_timeout,
             default_gas_limit: None,
@@ -281,7 +284,7 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::ListAllowed { start_after, limit } => {
             to_binary(&list_allowed(deps, start_after, limit)?)
         }
-        QueryMsg::Admin {} => to_binary(&ADMIN.query_admin(deps)?),
+        QueryMsg::Admin {} => to_binary(&ADMIN.query(deps.storage)?),
     }
 }
 
@@ -326,11 +329,13 @@ pub fn query_channel(deps: Deps, id: String) -> StdResult<ChannelResponse> {
 
 fn query_config(deps: Deps) -> StdResult<ConfigResponse> {
     let cfg = CONFIG.load(deps.storage)?;
-    let admin = ADMIN.get(deps)?.unwrap_or_else(|| Addr::unchecked(""));
     let res = ConfigResponse {
         default_timeout: cfg.default_timeout,
         default_gas_limit: cfg.default_gas_limit,
-        gov_contract: admin.into(),
+        gov_contract: ADMIN
+            .current(deps.storage)?
+            .map(String::from)
+            .unwrap_or_else(|| "None".to_string()),
     };
     Ok(res)
 }

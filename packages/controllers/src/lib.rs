@@ -18,6 +18,6 @@ mod admin;
 mod claim;
 mod hooks;
 
-pub use admin::{Admin, AdminError, AdminResponse};
+pub use admin::{Admin, AdminError, AdminExecuteUpdate, AdminResponse, AdminUpdate};
 pub use claim::{Claim, Claims, ClaimsResponse};
 pub use hooks::{HookError, Hooks, HooksResponse};

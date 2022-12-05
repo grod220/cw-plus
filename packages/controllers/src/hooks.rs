@@ -84,7 +84,7 @@ impl<'a> Hooks<'a> {
     where
         C: Clone + fmt::Debug + PartialEq + JsonSchema,
     {
-        admin.assert_admin(deps.as_ref(), &info.sender)?;
+        admin.assert_admin(deps.as_ref().storage, &info.sender)?;
         self.add_hook(deps.storage, addr.clone())?;
 
         let attributes = vec![
@@ -105,7 +105,7 @@ impl<'a> Hooks<'a> {
     where
         C: Clone + fmt::Debug + PartialEq + JsonSchema,
     {
-        admin.assert_admin(deps.as_ref(), &info.sender)?;
+        admin.assert_admin(deps.as_ref().storage, &info.sender)?;
         self.remove_hook(deps.storage, addr.clone())?;
 
         let attributes = vec![

@@ -9,6 +9,7 @@ use cw4::{
     Member, MemberChangedHookMsg, MemberDiff, MemberListResponse, MemberResponse,
     TotalWeightResponse,
 };
+use cw_controllers::AdminUpdate::{AbolishAdminRole, InitializeAdmin};
 use cw_storage_plus::Bound;
 use cw_utils::maybe_addr;
 
@@ -38,7 +39,7 @@ pub fn instantiate(
 // create is the instantiation logic with set_contract_version removed so it can more
 // easily be imported in other contracts
 pub fn create(
-    mut deps: DepsMut,
+    deps: DepsMut,
     admin: Option<String>,
     mut members: Vec<Member>,
     height: u64,
@@ -49,7 +50,10 @@ pub fn create(
     let admin_addr = admin
         .map(|admin| deps.api.addr_validate(&admin))
         .transpose()?;
-    ADMIN.set(deps.branch(), admin_addr)?;
+    match admin_addr {
+        Some(admin) => ADMIN.update(deps.storage, InitializeAdmin { admin })?,
+        None => ADMIN.update(deps.storage, AbolishAdminRole { sender: None })?,
+    }
 
     let mut total = Uint64::zero();
     for member in members.into_iter() {
@@ -73,11 +77,7 @@ pub fn execute(
 ) -> Result<Response, ContractError> {
     let api = deps.api;
     match msg {
-        ExecuteMsg::UpdateAdmin { admin } => Ok(ADMIN.execute_update_admin(
-            deps,
-            info,
-            admin.map(|admin| api.addr_validate(&admin)).transpose()?,
-        )?),
+        ExecuteMsg::UpdateAdmin { update } => Ok(ADMIN.execute_update(deps, info, update)?),
         ExecuteMsg::UpdateMembers { add, remove } => {
             execute_update_members(deps, env, info, add, remove)
         }
@@ -126,7 +126,7 @@ pub fn update_members(
     validate_unique_members(&mut to_add)?;
     let to_add = to_add; // let go of mutability
 
-    ADMIN.assert_admin(deps.as_ref(), &sender)?;
+    ADMIN.assert_admin(deps.storage, &sender)?;
 
     let mut total = Uint64::from(TOTAL.load(deps.storage)?);
     let mut diffs: Vec<MemberDiff> = vec![];
@@ -170,7 +170,7 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::TotalWeight { at_height: height } => {
             to_binary(&query_total_weight(deps, height)?)
         }
-        QueryMsg::Admin {} => to_binary(&ADMIN.query_admin(deps)?),
+        QueryMsg::Admin {} => to_binary(&ADMIN.query(deps.storage)?),
         QueryMsg::Hooks {} => to_binary(&HOOKS.query_hooks(deps)?),
     }
 }

@@ -9,6 +9,7 @@ use crate::query::HooksResponse;
 use crate::{
     AdminResponse, Cw4QueryMsg, Member, MemberListResponse, MemberResponse, MEMBERS_KEY, TOTAL_KEY,
 };
+use cw_controllers::AdminExecuteUpdate;
 use cw_storage_plus::{Item, Map};
 
 /// Cw4Contract is a wrapper around Addr that provides a lot of helpers
@@ -46,10 +47,8 @@ impl Cw4Contract {
         self.encode_msg(msg)
     }
 
-    pub fn update_admin<T: Into<String>>(&self, admin: Option<T>) -> StdResult<CosmosMsg> {
-        let msg = Cw4ExecuteMsg::UpdateAdmin {
-            admin: admin.map(|x| x.into()),
-        };
+    pub fn update_admin(&self, update: AdminExecuteUpdate) -> StdResult<CosmosMsg> {
+        let msg = Cw4ExecuteMsg::UpdateAdmin { update };
         self.encode_msg(msg)
     }
 

@@ -39,7 +39,7 @@ fn proper_instantiation() {
     set_up(deps.as_mut());
 
     // it worked, let's query the state
-    let res = ADMIN.query_admin(deps.as_ref()).unwrap();
+    let res = ADMIN.query(deps.as_ref().storage).unwrap();
     assert_eq!(Some(INIT_ADMIN.into()), res.admin);
 
     let res = query_total_weight(deps.as_ref(), None).unwrap();

@@ -11,6 +11,7 @@ use cw4::{
     Member, MemberChangedHookMsg, MemberDiff, MemberListResponse, MemberResponse,
     TotalWeightResponse,
 };
+use cw_controllers::AdminUpdate::{AbolishAdminRole, InitializeAdmin};
 use cw_storage_plus::Bound;
 use cw_utils::{maybe_addr, NativeBalance};
 
@@ -26,14 +27,17 @@ const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 // make use of the custom errors
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
-    mut deps: DepsMut,
+    deps: DepsMut,
     _env: Env,
     _info: MessageInfo,
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     let api = deps.api;
-    ADMIN.set(deps.branch(), maybe_addr(api, msg.admin)?)?;
+    match maybe_addr(api, msg.admin)? {
+        Some(admin) => ADMIN.update(deps.storage, InitializeAdmin { admin })?,
+        None => ADMIN.update(deps.storage, AbolishAdminRole { sender: None })?,
+    };
 
     // min_bond is at least 1, so 0 stake -> non-membership
     let min_bond = std::cmp::max(msg.min_bond, Uint128::new(1));
@@ -60,9 +64,7 @@ pub fn execute(
 ) -> Result<Response, ContractError> {
     let api = deps.api;
     match msg {
-        ExecuteMsg::UpdateAdmin { admin } => {
-            Ok(ADMIN.execute_update_admin(deps, info, maybe_addr(api, admin)?)?)
-        }
+        ExecuteMsg::UpdateAdmin { update } => Ok(ADMIN.execute_update(deps, info, update)?),
         ExecuteMsg::AddHook { addr } => {
             Ok(HOOKS.execute_add_hook(&ADMIN, deps, info, api.addr_validate(&addr)?)?)
         }
@@ -302,7 +304,7 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
             to_binary(&CLAIMS.query_claims(deps, &deps.api.addr_validate(&address)?)?)
         }
         QueryMsg::Staked { address } => to_binary(&query_staked(deps, address)?),
-        QueryMsg::Admin {} => to_binary(&ADMIN.query_admin(deps)?),
+        QueryMsg::Admin {} => to_binary(&ADMIN.query(deps.storage)?),
         QueryMsg::Hooks {} => to_binary(&HOOKS.query_hooks(deps)?),
     }
 }
@@ -469,7 +471,7 @@ mod tests {
         default_instantiate(deps.as_mut());
 
         // it worked, let's query the state
-        let res = ADMIN.query_admin(deps.as_ref()).unwrap();
+        let res = ADMIN.query(deps.as_ref().storage).unwrap();
         assert_eq!(Some(INIT_ADMIN.into()), res.admin);
 
         let res = query_total_weight(deps.as_ref()).unwrap();

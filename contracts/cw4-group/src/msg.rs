@@ -1,5 +1,6 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cw4::Member;
+use cw_controllers::AdminExecuteUpdate;
 
 #[cw_serde]
 pub struct InstantiateMsg {
@@ -12,7 +13,7 @@ pub struct InstantiateMsg {
 #[cw_serde]
 pub enum ExecuteMsg {
     /// Change the admin
-    UpdateAdmin { admin: Option<String> },
+    UpdateAdmin { update: AdminExecuteUpdate },
     /// apply a diff to the existing members.
     /// remove is applied after add, so if an address is in both, it is removed
     UpdateMembers {

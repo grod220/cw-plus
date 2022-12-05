@@ -397,6 +397,7 @@ version = "1.0.0"
 dependencies = [
  "cosmwasm-schema",
  "cosmwasm-std",
+ "cw-controllers",
  "cw-multi-test",
  "cw-storage-plus",
  "cw-utils",
@@ -418,6 +419,7 @@ version = "1.0.0"
 dependencies = [
  "cosmwasm-schema",
  "cosmwasm-std",
+ "cw-controllers",
  "cw-storage-plus",
  "schemars",
  "serde",
