@@ -27,78 +27,22 @@ pub enum SecureAdminError {
     #[error("Caller is not the proposed admin")]
     NotProposedAdmin {},
 
-    #[error("Admin state transition was not valid")]
-    StateTransitionError {},
+    #[error("Admin state was already initialized")]
+    AlreadyInitialized {},
+
+    #[error("The admin role is abolished. No further updates possible.")]
+    AdminRoleAbolished {},
 }
 
 type AdminResult<T> = Result<T, SecureAdminError>;
 
 /// The finite states that are possible
 #[cw_serde]
-enum AdminState {
-    A(AdminUninitialized),
-    B(AdminSetNoneProposed),
-    C(AdminSetWithProposed),
-    D(AdminRoleAbolished),
+struct AdminState {
+    abolished: bool,
+    admin: Option<Addr>,
+    proposed: Option<Addr>,
 }
-
-#[cw_serde]
-struct AdminUninitialized;
-
-impl AdminUninitialized {
-    pub fn initialize(&self, admin: &Addr) -> AdminState {
-        AdminState::B(AdminSetNoneProposed {
-            admin: admin.clone(),
-        })
-    }
-
-    pub fn abolish_admin_role(&self) -> AdminState {
-        AdminState::D(AdminRoleAbolished)
-    }
-}
-
-#[cw_serde]
-struct AdminSetNoneProposed {
-    admin: Addr,
-}
-
-impl AdminSetNoneProposed {
-    pub fn propose(self, proposed: &Addr) -> AdminState {
-        AdminState::C(AdminSetWithProposed {
-            admin: self.admin,
-            proposed: proposed.clone(),
-        })
-    }
-
-    pub fn abolish_admin_role(self) -> AdminState {
-        AdminState::D(AdminRoleAbolished)
-    }
-}
-
-#[cw_serde]
-struct AdminSetWithProposed {
-    admin: Addr,
-    proposed: Addr,
-}
-
-impl AdminSetWithProposed {
-    pub fn clear_proposed(self) -> AdminState {
-        AdminState::B(AdminSetNoneProposed { admin: self.admin })
-    }
-
-    pub fn accept_proposed(self) -> AdminState {
-        AdminState::B(AdminSetNoneProposed {
-            admin: self.proposed,
-        })
-    }
-
-    pub fn abolish_admin_role(self) -> AdminState {
-        AdminState::D(AdminRoleAbolished)
-    }
-}
-
-#[cw_serde]
-struct AdminRoleAbolished;
 
 #[cw_serde]
 pub enum SecureAdminUpdate {
@@ -161,21 +105,18 @@ impl<'a> SecureAdmin<'a> {
     }
 
     fn state(&self, storage: &'a dyn Storage) -> StdResult<AdminState> {
-        Ok(self
-            .0
-            .may_load(storage)?
-            .unwrap_or(AdminState::A(AdminUninitialized)))
+        Ok(self.0.may_load(storage)?.unwrap_or(AdminState {
+            abolished: false,
+            admin: None,
+            proposed: None,
+        }))
     }
 
     //--------------------------------------------------------------------------------------------------
     // Queries
     //--------------------------------------------------------------------------------------------------
     pub fn current(&self, storage: &'a dyn Storage) -> StdResult<Option<Addr>> {
-        Ok(match self.state(storage)? {
-            AdminState::B(b) => Some(b.admin),
-            AdminState::C(c) => Some(c.admin),
-            _ => None,
-        })
+        Ok(self.state(storage)?.admin)
     }
 
     pub fn is_admin(&self, storage: &'a dyn Storage, addr: &Addr) -> StdResult<bool> {
@@ -186,10 +127,7 @@ impl<'a> SecureAdmin<'a> {
     }
 
     pub fn proposed(&self, storage: &'a dyn Storage) -> StdResult<Option<Addr>> {
-        Ok(match self.state(storage)? {
-            AdminState::C(c) => Some(c.proposed),
-            _ => None,
-        })
+        Ok(self.state(storage)?.proposed)
     }
 
     pub fn is_proposed(&self, storage: &'a dyn Storage, addr: &Addr) -> StdResult<bool> {
@@ -216,22 +154,40 @@ impl<'a> SecureAdmin<'a> {
         api: &'a dyn Api,
         init_action: AdminInit,
     ) -> AdminResult<()> {
-        let initial_state = self.state(storage)?;
-        match initial_state {
-            AdminState::A(a) => {
-                let new_state = match init_action {
-                    AdminInit::SetInitialAdmin { admin } => {
-                        let validated = api.addr_validate(&admin)?;
-                        a.initialize(&validated)
-                    }
-                    AdminInit::AbolishAdminRole => a.abolish_admin_role(),
-                };
-                self.0.save(storage, &new_state)?;
-                Ok(())
-            }
-            // Can only be in uninitialized state to call this fn
-            _ => Err(SecureAdminError::StateTransitionError {}),
+        let state = self.state(storage)?;
+
+        if state.abolished {
+            return Err(SecureAdminError::AdminRoleAbolished {});
         }
+
+        if state.admin.is_some() {
+            return Err(SecureAdminError::AlreadyInitialized {});
+        }
+
+        match init_action {
+            AdminInit::SetInitialAdmin { admin } => {
+                let validated = api.addr_validate(&admin)?;
+                self.0.save(
+                    storage,
+                    &AdminState {
+                        abolished: false,
+                        admin: Some(validated),
+                        proposed: None,
+                    },
+                )?;
+            }
+            AdminInit::AbolishAdminRole => {
+                self.0.save(
+                    storage,
+                    &AdminState {
+                        abolished: true,
+                        admin: None,
+                        proposed: None,
+                    },
+                )?;
+            }
+        }
+        Ok(())
     }
 
     /// Composes execute responses for admin state updates
@@ -266,33 +222,35 @@ impl<'a> SecureAdmin<'a> {
         sender: &Addr,
         event: SecureAdminUpdate,
     ) -> AdminResult<AdminState> {
-        let state = self.state(storage)?;
+        let mut state = self.state(storage)?;
 
-        let new_state = match (state, event) {
-            (AdminState::B(b), SecureAdminUpdate::ProposeNewAdmin { proposed }) => {
+        if state.abolished {
+            return Err(SecureAdminError::AdminRoleAbolished {});
+        }
+
+        match event {
+            SecureAdminUpdate::ProposeNewAdmin { proposed } => {
+                self.assert_admin(storage, sender)?;
                 let validated = api.addr_validate(&proposed)?;
-                self.assert_admin(storage, sender)?;
-                b.propose(&validated)
+                state.proposed = Some(validated);
             }
-            (AdminState::B(b), SecureAdminUpdate::AbolishAdminRole) => {
+            SecureAdminUpdate::AbolishAdminRole => {
                 self.assert_admin(storage, sender)?;
-                b.abolish_admin_role()
+                state.abolished = true;
+                state.proposed = None;
+                state.admin = None;
             }
-            (AdminState::C(c), SecureAdminUpdate::AcceptProposed) => {
+            SecureAdminUpdate::ClearProposed => {
+                self.assert_admin(storage, sender)?;
+                state.proposed = None;
+            }
+            SecureAdminUpdate::AcceptProposed => {
                 self.assert_proposed(storage, sender)?;
-                c.accept_proposed()
+                state.admin = Some(sender.clone());
+                state.proposed = None;
             }
-            (AdminState::C(c), SecureAdminUpdate::ClearProposed) => {
-                self.assert_admin(storage, sender)?;
-                c.clear_proposed()
-            }
-            (AdminState::C(c), SecureAdminUpdate::AbolishAdminRole) => {
-                self.assert_admin(storage, sender)?;
-                c.abolish_admin_role()
-            }
-            (_, _) => return Err(SecureAdminError::StateTransitionError {}),
-        };
-        Ok(new_state)
+        }
+        Ok(state)
     }
 
     //--------------------------------------------------------------------------------------------------
@@ -348,22 +306,22 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert_eq!(err, SecureAdminError::StateTransitionError {});
+        assert_eq!(err, SecureAdminError::NotAdmin {});
 
         let err = admin
             .update::<Empty, Empty>(deps.as_mut(), info.clone(), ClearProposed)
             .unwrap_err();
-        assert_eq!(err, SecureAdminError::StateTransitionError {});
+        assert_eq!(err, SecureAdminError::NotAdmin {});
 
         let err = admin
             .update::<Empty, Empty>(deps.as_mut(), info.clone(), AcceptProposed)
             .unwrap_err();
-        assert_eq!(err, SecureAdminError::StateTransitionError {});
+        assert_eq!(err, SecureAdminError::NotProposedAdmin {});
 
         let err = admin
             .update::<Empty, Empty>(deps.as_mut(), info, AbolishAdminRole)
             .unwrap_err();
-        assert_eq!(err, SecureAdminError::StateTransitionError {});
+        assert_eq!(err, SecureAdminError::NotAdmin {});
     }
 
     #[test]
@@ -394,17 +352,12 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert_eq!(err, SecureAdminError::StateTransitionError {});
-
-        let err = admin
-            .update::<Empty, Empty>(deps.as_mut(), info.clone(), ClearProposed)
-            .unwrap_err();
-        assert_eq!(err, SecureAdminError::StateTransitionError {});
+        assert_eq!(err, SecureAdminError::AlreadyInitialized {});
 
         let err = admin
             .update::<Empty, Empty>(deps.as_mut(), info, AcceptProposed)
             .unwrap_err();
-        assert_eq!(err, SecureAdminError::StateTransitionError {});
+        assert_eq!(err, SecureAdminError::NotProposedAdmin {});
     }
 
     #[test]
@@ -447,18 +400,7 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert_eq!(err, SecureAdminError::StateTransitionError {});
-
-        let err = admin
-            .update::<Empty, Empty>(
-                deps.as_mut(),
-                info,
-                ProposeNewAdmin {
-                    proposed: "efg".to_string(),
-                },
-            )
-            .unwrap_err();
-        assert_eq!(err, SecureAdminError::StateTransitionError {});
+        assert_eq!(err, SecureAdminError::AlreadyInitialized {});
     }
 
     #[test]
@@ -483,7 +425,7 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert_eq!(err, SecureAdminError::StateTransitionError {});
+        assert_eq!(err, SecureAdminError::AdminRoleAbolished {});
 
         let err = admin
             .update::<Empty, Empty>(
@@ -494,22 +436,22 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert_eq!(err, SecureAdminError::StateTransitionError {});
+        assert_eq!(err, SecureAdminError::AdminRoleAbolished {});
 
         let err = admin
             .update::<Empty, Empty>(deps.as_mut(), info.clone(), ClearProposed)
             .unwrap_err();
-        assert_eq!(err, SecureAdminError::StateTransitionError {});
+        assert_eq!(err, SecureAdminError::AdminRoleAbolished {});
 
         let err = admin
             .update::<Empty, Empty>(deps.as_mut(), info.clone(), AcceptProposed)
             .unwrap_err();
-        assert_eq!(err, SecureAdminError::StateTransitionError {});
+        assert_eq!(err, SecureAdminError::AdminRoleAbolished {});
 
         let err = admin
             .update::<Empty, Empty>(deps.as_mut(), info, AbolishAdminRole)
             .unwrap_err();
-        assert_eq!(err, SecureAdminError::StateTransitionError {});
+        assert_eq!(err, SecureAdminError::AdminRoleAbolished {});
     }
 
     //--------------------------------------------------------------------------------------------------
@@ -677,10 +619,10 @@ mod tests {
 
     fn assert_uninitialized(storage: &dyn Storage, admin: &SecureAdmin) {
         let state = admin.state(storage).unwrap();
-        match state {
-            AdminState::A(_) => {}
-            _ => panic!("Should be in the AdminUninitialized state"),
-        }
+
+        assert_eq!(state.abolished, false);
+        assert_eq!(state.admin, None);
+        assert_eq!(state.proposed, None);
 
         let current = admin.current(storage).unwrap();
         assert_eq!(current, None);
@@ -723,10 +665,9 @@ mod tests {
             .unwrap();
 
         let state = admin.state(mut_deps.storage).unwrap();
-        match state {
-            AdminState::B(_) => {}
-            _ => panic!("Should be in the AdminSetNoneProposed state"),
-        }
+        assert!(state.admin.is_some());
+        assert!(state.proposed.is_none());
+        assert_eq!(state.abolished, false);
 
         let current = admin.current(mut_deps.storage).unwrap();
         assert_eq!(current, Some(original_admin.clone()));
@@ -777,10 +718,9 @@ mod tests {
         let storage = deps.as_mut().storage;
 
         let state = admin.state(storage).unwrap();
-        match state {
-            AdminState::C(_) => {}
-            _ => panic!("Should be in the AdminSetWithProposed state"),
-        }
+        assert!(state.admin.is_some());
+        assert!(state.proposed.is_some());
+        assert_eq!(state.abolished, false);
 
         let current = admin.current(storage).unwrap();
         assert_eq!(current, Some(original_admin.clone()));
@@ -838,10 +778,9 @@ mod tests {
         let storage = deps.as_mut().storage;
 
         let state = admin.state(storage).unwrap();
-        match state {
-            AdminState::B(_) => {}
-            _ => panic!("Should be in the AdminSetNoneProposed state"),
-        }
+        assert!(state.admin.is_some());
+        assert!(state.proposed.is_none());
+        assert_eq!(state.abolished, false);
 
         let current = admin.current(storage).unwrap();
         assert_eq!(current, Some(original_admin.clone()));
@@ -900,10 +839,9 @@ mod tests {
         let storage = deps.as_mut().storage;
 
         let state = admin.state(storage).unwrap();
-        match state {
-            AdminState::B(_) => {}
-            _ => panic!("Should be in the AdminSetNoneProposed state"),
-        }
+        assert!(state.admin.is_some());
+        assert!(state.proposed.is_none());
+        assert_eq!(state.abolished, false);
 
         let current = admin.current(storage).unwrap();
         assert_eq!(current, Some(proposed_admin.clone()));
@@ -949,10 +887,9 @@ mod tests {
         let storage = deps.as_mut().storage;
 
         let state = admin.state(storage).unwrap();
-        match state {
-            AdminState::D(_) => {}
-            _ => panic!("Should be in the AdminRoleAbolished state"),
-        }
+        assert!(state.admin.is_none());
+        assert!(state.proposed.is_none());
+        assert_eq!(state.abolished, true);
 
         let current = admin.current(storage).unwrap();
         assert_eq!(current, None);
